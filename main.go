@@ -5,10 +5,14 @@
 // a Markdown content suitable as a README boilerplate.
 //
 //   goreadme [.] > README.md
+//
+// For default template, run `go doc github.com/motemen/goreadme.DefaultTemplate`.
 package main
 
 import (
 	"bytes"
+	"flag"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -24,19 +28,19 @@ import (
 	"go/token"
 )
 
-type readme struct {
-	Fset     *token.FileSet
+type Readme struct {
+	fset     *token.FileSet
 	Pkg      *doc.Package
 	Examples []*doc.Example
 	Exports  []string
-	Author   author
+	Author   Author
 }
 
-func (r readme) IsCommand() bool {
+func (r Readme) IsCommand() bool {
 	return r.Pkg.Name == "main"
 }
 
-func (r readme) Name() string {
+func (r Readme) Name() string {
 	if r.Pkg.Name == "main" {
 		// this package should be a command
 		parts := strings.Split(r.Pkg.ImportPath, "/")
@@ -46,7 +50,7 @@ func (r readme) Name() string {
 	return r.Pkg.Name
 }
 
-type author struct {
+type Author struct {
 	Name string
 }
 
@@ -55,17 +59,8 @@ var predefCodePatterns = []string{
 	`[a-z]+\.[A-Z]\w*`, // e.g. "http.Client"
 }
 
-var tmpl = template.Must(template.New("readme").Funcs(template.FuncMap{
-	"code":     func() string { return "" },
-	"markdown": func() string { return "" },
-	"fence": func(ft, s string) string {
-		if !strings.HasSuffix(s, "\n") {
-			s = s + "\n"
-		}
-		return "```" + ft + "\n" + s + "```\n"
-	},
-}).Parse(
-	`# {{.Name}}
+// The default README template.
+var DefaultTemplate = `# {{.Name}}
 
 {{if (not .IsCommand)}}
 [![GoDoc](https://godoc.org/{{.Pkg.ImportPath}}?status.svg)](https://godoc.org/{{.Pkg.ImportPath}})
@@ -97,12 +92,15 @@ Output:
 ## Author
 
 {{.Author.Name}} <https://github.com/{{.Author.Name}}>
-`))
+`
 
 func main() {
+	tmplFile := flag.String("f", "", "template file")
+	flag.Parse()
+
 	dir := "."
 
-	args := os.Args
+	args := flag.Args()
 	if len(args) >= 2 {
 		dir = args[1]
 	}
@@ -123,7 +121,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	r := readme{}
+	r := Readme{}
 
 	for name, pkg := range pkgs {
 		r.Examples = append(r.Examples, doc.Examples(pkgFiles(pkg)...)...)
@@ -149,7 +147,7 @@ func main() {
 		r.Exports = append(r.Exports, t.Name)
 	}
 
-	r.Author = author{
+	r.Author = Author{
 		Name: regexp.MustCompile(`^github\.com/([^/]+)`).FindStringSubmatch(r.Pkg.ImportPath)[1],
 	}
 
@@ -162,8 +160,7 @@ func main() {
 		rxEmptyLines = regexp.MustCompile(`\n{3,}`)
 	)
 
-	var buf bytes.Buffer
-	err = tmpl.Funcs(template.FuncMap{
+	tmpl := template.New("readme").Funcs(template.FuncMap{
 		"code": func(node ast.Node) string {
 			var buf bytes.Buffer
 			if block, ok := node.(*ast.BlockStmt); ok {
@@ -191,7 +188,27 @@ func main() {
 			}
 			return strings.Join(lines, "\n")
 		},
-	}).Execute(&buf, r)
+		"fence": func(ft, s string) string {
+			if !strings.HasSuffix(s, "\n") {
+				s = s + "\n"
+			}
+			return "```" + ft + "\n" + s + "```\n"
+		},
+	})
+
+	tmplContent := DefaultTemplate
+	if *tmplFile != "" {
+		b, err := ioutil.ReadFile(*tmplFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		tmplContent = string(b)
+	}
+
+	template.Must(tmpl.Parse(tmplContent))
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, r)
 
 	if err != nil {
 		log.Fatal(err)
