@@ -2,6 +2,11 @@
 // TODO: Custom templates
 // TODO: Godoc format to Markdown
 
+// goreadme generates an (opinionated) READMEs for your Go packages.
+// it extracts informatino from the source code and tests, then generates
+// a Markdown content suitable as a README boilerplate.
+//
+//   goreadme [.] > README.md
 package main
 
 import (
@@ -25,35 +30,56 @@ type readme struct {
 	Fset     *token.FileSet
 	Pkg      *doc.Package
 	Examples []*doc.Example
+	Exports  []string
 	Author   author
+}
+
+func (r readme) IsCommand() bool {
+	return r.Pkg.Name == "main"
+}
+
+func (r readme) Name() string {
+	if r.Pkg.Name == "main" {
+		// this package should be a command
+		parts := strings.Split(r.Pkg.ImportPath, "/")
+		return parts[len(parts)-1]
+	}
+
+	return r.Pkg.Name
 }
 
 type author struct {
 	Name string
 }
 
+var predefCodePatterns = []string{
+	"interface",
+	`[a-z]+\.[A-Z]\w*`, // e.g. "http.Client"
+}
+
 var tmpl = template.Must(template.New("readme").Funcs(template.FuncMap{
-	"code": func(node *ast.Node) string {
-		return ""
+	"code":     func() string { return "" },
+	"markdown": func() string { return "" },
+	"fence": func(ft, s string) string {
+		if !strings.HasSuffix(s, "\n") {
+			s = s + "\n"
+		}
+		return "```" + ft + "\n" + s + "```\n"
 	},
 }).Parse(
-	`# {{.Pkg.Name}}
+	`# {{.Name}}
 
-[![GoDoc](https://godoc.org/{{.Pkg.ImportPath}}?status.svg)](https://godoc.org/{{.Pkg.ImportPath}})
-
-{{.Pkg.Doc}}
+{{if (not .IsCommand)}}[![GoDoc](https://godoc.org/{{.Pkg.ImportPath}}?status.svg)](https://godoc.org/{{.Pkg.ImportPath}})
+{{end}}
+{{.Pkg.Doc|markdown}}
 {{if (len .Examples)}}## Examples
 {{range .Examples}}
 ### {{.Name}}
 
-` + "```" + `go
-{{.Code|code}}
-` + "```" + `
-{{if .Output}}
+` + `{{.Code|code|fence "go"}}{{if .Output}}
 Output:
-` + "```" + `
-{{.Output}}
-` + "```" + `
+
+{{.Output|fence ""}}
 {{end}}{{end}}{{end}}
 ## Author
 
@@ -93,9 +119,29 @@ func main() {
 		break
 	}
 
+	for _, v := range append(r.Pkg.Consts, r.Pkg.Vars...) {
+		r.Exports = append(r.Exports, v.Names...)
+	}
+
+	for _, f := range r.Pkg.Funcs {
+		r.Exports = append(r.Exports, f.Name)
+	}
+
+	for _, t := range r.Pkg.Funcs {
+		r.Exports = append(r.Exports, t.Name)
+	}
+
 	r.Author = author{
 		Name: regexp.MustCompile(`^github\.com/([^/]+)`).FindStringSubmatch(r.Pkg.ImportPath)[1],
 	}
+
+	var (
+		rxCode = regexp.MustCompile(
+			`(\b(?:` + strings.Join(append(r.Exports, predefCodePatterns...), "|") + `)\b` +
+				`(?:\{.*?\}|\[.*?\]|\(.*?\))?)`,
+		)
+		rxIndent = regexp.MustCompile(`^ {1,3}(\S)`)
+	)
 
 	err = tmpl.Funcs(template.FuncMap{
 		"code": func(node ast.Node) string {
@@ -106,6 +152,15 @@ func main() {
 				printer.Fprint(&buf, fset, node)
 			}
 			return buf.String()
+		},
+		"markdown": func(doc string) string {
+			lines := strings.Split(doc, "\n")
+			for i, line := range lines {
+				line = rxIndent.ReplaceAllString(line, "    $1")
+				line = rxCode.ReplaceAllString(line, "`$1`")
+				lines[i] = line
+			}
+			return strings.Join(lines, "\n")
 		},
 	}).Execute(os.Stdout, r)
 
