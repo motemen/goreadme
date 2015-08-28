@@ -1,6 +1,4 @@
-// TODO: README for cmds
 // TODO: Custom templates
-// TODO: Godoc format to Markdown
 
 // goreadme generates an (opinionated) READMEs for your Go packages.
 // it extracts informatino from the source code and tests, then generates
@@ -69,18 +67,33 @@ var tmpl = template.Must(template.New("readme").Funcs(template.FuncMap{
 }).Parse(
 	`# {{.Name}}
 
-{{if (not .IsCommand)}}[![GoDoc](https://godoc.org/{{.Pkg.ImportPath}}?status.svg)](https://godoc.org/{{.Pkg.ImportPath}})
+{{if (not .IsCommand)}}
+[![GoDoc](https://godoc.org/{{.Pkg.ImportPath}}?status.svg)](https://godoc.org/{{.Pkg.ImportPath}})
 {{end}}
+
 {{.Pkg.Doc|markdown}}
-{{if (len .Examples)}}## Examples
-{{range .Examples}}
+
+{{if .IsCommand}}
+## Installation
+
+    go get -u {{.Pkg.ImportPath}}
+
+{{end}}
+
+{{if (len .Examples)}}
+## Examples
+{{  range .Examples}}
 ### {{.Name}}
 
-` + `{{.Code|code|fence "go"}}{{if .Output}}
+{{.Code|code|fence "go"}}
+{{    if .Output}}
 Output:
 
 {{.Output|fence ""}}
-{{end}}{{end}}{{end}}
+{{    end}}
+{{  end}}
+{{end}}
+
 ## Author
 
 {{.Author.Name}} <https://github.com/{{.Author.Name}}>
@@ -88,6 +101,11 @@ Output:
 
 func main() {
 	dir := "."
+
+	args := os.Args
+	if len(args) >= 2 {
+		dir = args[1]
+	}
 
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, dir, nil, parser.ParseComments)
@@ -140,9 +158,11 @@ func main() {
 			`(\b(?:` + strings.Join(append(r.Exports, predefCodePatterns...), "|") + `)\b` +
 				`(?:\{.*?\}|\[.*?\]|\(.*?\))?)`,
 		)
-		rxIndent = regexp.MustCompile(`^ {1,3}(\S)`)
+		rxIndent     = regexp.MustCompile(`^\s+\S`)
+		rxEmptyLines = regexp.MustCompile(`\n{3,}`)
 	)
 
+	var buf bytes.Buffer
 	err = tmpl.Funcs(template.FuncMap{
 		"code": func(node ast.Node) string {
 			var buf bytes.Buffer
@@ -155,18 +175,30 @@ func main() {
 		},
 		"markdown": func(doc string) string {
 			lines := strings.Split(doc, "\n")
+			inCodeBlock := false
 			for i, line := range lines {
-				line = rxIndent.ReplaceAllString(line, "    $1")
+				if rxIndent.MatchString(line) {
+					line = "    " + strings.TrimSpace(line)
+					if !inCodeBlock {
+						line = "\n" + line
+					}
+					inCodeBlock = true
+				} else {
+					inCodeBlock = false
+				}
 				line = rxCode.ReplaceAllString(line, "`$1`")
 				lines[i] = line
 			}
 			return strings.Join(lines, "\n")
 		},
-	}).Execute(os.Stdout, r)
+	}).Execute(&buf, r)
 
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// drop successive empty lines
+	os.Stdout.WriteString(rxEmptyLines.ReplaceAllString(buf.String(), "\n\n"))
 }
 
 func pkgFiles(pkg *ast.Package) []*ast.File {
