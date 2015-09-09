@@ -124,15 +124,17 @@ func main() {
 	r := Readme{}
 
 	for name, pkg := range pkgs {
+		log.Println(name, pkg)
+
 		r.Examples = append(r.Examples, doc.Examples(pkgFiles(pkg)...)...)
 
 		if strings.HasSuffix(name, "_test") {
 			continue
 		}
 
-		r.Pkg = doc.New(pkg, bpkg.ImportPath, doc.Mode(0))
-
-		break
+		if r.Pkg == nil {
+			r.Pkg = doc.New(pkg, bpkg.ImportPath, doc.Mode(0))
+		}
 	}
 
 	for _, v := range append(r.Pkg.Consts, r.Pkg.Vars...) {
