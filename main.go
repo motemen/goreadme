@@ -124,8 +124,6 @@ func main() {
 	r := Readme{}
 
 	for name, pkg := range pkgs {
-		log.Println(name, pkg)
-
 		r.Examples = append(r.Examples, doc.Examples(pkgFiles(pkg)...)...)
 
 		if strings.HasSuffix(name, "_test") {
