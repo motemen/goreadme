@@ -12,6 +12,7 @@ package main
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -80,7 +81,7 @@ var DefaultTemplate = `# {{.Name}}
 {{  range .Examples}}
 ### {{.Name}}
 
-{{.Code|code|fence "go"}}
+{{.|code|fence "go"}}
 {{    if .Output}}
 Output:
 
@@ -160,14 +161,49 @@ func main() {
 		rxEmptyLines = regexp.MustCompile(`\n{3,}`)
 	)
 
+	printerConfig := printer.Config{
+		Tabwidth: 4,
+		Mode:     printer.UseSpaces,
+	}
+
 	tmpl := template.New("readme").Funcs(template.FuncMap{
-		"code": func(node ast.Node) string {
-			var buf bytes.Buffer
-			if block, ok := node.(*ast.BlockStmt); ok {
-				printer.Fprint(&buf, fset, block.List)
+		"code": func(v interface{}) string {
+			var (
+				buf bytes.Buffer
+				err error
+			)
+			if node, ok := v.(ast.Node); ok {
+				if block, ok := node.(*ast.BlockStmt); ok {
+					err = printerConfig.Fprint(&buf, fset, block.List)
+				} else {
+					err = printerConfig.Fprint(&buf, fset, node)
+				}
+			} else if ex, ok := v.(*doc.Example); ok {
+				if block, ok := ex.Code.(*ast.BlockStmt); ok {
+					for _, s := range block.List {
+						node := printer.CommentedNode{
+							Node:     s,
+							Comments: ex.Comments,
+						}
+						err = printerConfig.Fprint(&buf, fset, &node)
+						if err != nil {
+							break
+						}
+					}
+				} else {
+					node := printer.CommentedNode{
+						Node:     ex.Code,
+						Comments: ex.Comments,
+					}
+					err = printerConfig.Fprint(&buf, fset, &node)
+				}
 			} else {
-				printer.Fprint(&buf, fset, node)
+				panic(fmt.Sprintf("cannot handle %T", v))
 			}
+			if err != nil {
+				panic(err)
+			}
+
 			return buf.String()
 		},
 		"markdown": func(doc string) string {
