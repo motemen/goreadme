@@ -8,6 +8,7 @@
 package main
 
 // TODO(motemen): Make author information correct
+// TODO(motemen): Show only toplevel todos?
 
 import (
 	"bytes"
@@ -57,15 +58,16 @@ type Author struct {
 }
 
 var (
-	patIdent   = `[\pL_][\pL_0-9]*`
-	patPkgPath = `(?:[-a-z0-9.:]+/)*[-a-z0-9]+`
+	patExportedIdent = `\p{Lu}[\pL_0-9]*`
+	patPkgPath       = `(?:[-a-z0-9.:]+/)*[-a-z0-9]+`
 )
 
 var predefCodePatterns = []string{
 	"interface",
 	"struct",
-	`(?:` + patPkgPath + `\.)?` + patIdent + `\.` + patIdent,
-	`\(\*` + `(?:` + patPkgPath + `\.)?` + patIdent + `\.\)` + patIdent,
+	`(?:` + patPkgPath + `\.)?` + patExportedIdent + `\.` + patExportedIdent,
+	patPkgPath + `\.` + `(?:` + patExportedIdent + `\.)?` + patExportedIdent,
+	`\(\*` + `(?:` + patPkgPath + `\.)?` + patExportedIdent + `\)\.` + patExportedIdent,
 }
 
 func mkCodeRegexp(idents []string) *regexp.Regexp {
@@ -226,13 +228,13 @@ func pkgFiles(pkg *ast.Package) []*ast.File {
 	return ff
 }
 
-var rxParseHTML = regexp.MustCompile(
-	`<a\b[^>]*>(?P<link>[^<]*)</a>` +
-		`|<pre\b[^>]*>(?P<pre>[^<]*)</pre>` +
-		`|<h3\b[^>]*>(?P<heading>[^<]*)</h3>` +
-		`|<p\b[^>]*>\n?(?P<para>[^<]*)</[^>]*>` +
-		`|<[^>]*>(?P<other>[^<]*)</[^>]*>` +
-		`|(?P<plain>[^<]+)`,
+var (
+	rxParseHTML = regexp.MustCompile(
+		`<pre\b[^>]*>(?P<pre>[^<]*)</pre>` +
+			`|<h3\b[^>]*>(?P<heading>[^<]*)</h3>` +
+			`|<p\b[^>]*>\n?(?P<para>(?s:.)*?)</p>`,
+	)
+	rxStripTag = regexp.MustCompile(`<[^>]*>`)
 )
 
 func renderMarkdown(docString string, idents []string) string {
@@ -273,13 +275,17 @@ func renderMarkdown(docString string, idents []string) string {
 					}
 					out.WriteString(line)
 				}
+				out.WriteString("\n")
 			} else if name == "heading" {
 				out.WriteString("## ")
 				out.WriteString(s)
-				out.WriteString("\n")
+				out.WriteString("\n\n")
 			} else {
+				s = rxStripTag.ReplaceAllString(s, "")
 				s = rxCode.ReplaceAllString(s, "$1`$2`$3")
+				s = regexp.MustCompile(`[_]`).ReplaceAllString(s, `\_`)
 				out.WriteString(s)
+				out.WriteString("\n")
 			}
 		}
 
