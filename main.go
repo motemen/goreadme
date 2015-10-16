@@ -110,8 +110,8 @@ func main() {
 	dir := "."
 
 	args := flag.Args()
-	if len(args) >= 2 {
-		dir = args[1]
+	if len(args) >= 1 {
+		dir = args[0]
 	}
 
 	fset := token.NewFileSet()
