@@ -18,6 +18,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -37,6 +38,7 @@ type Readme struct {
 	Examples []*doc.Example
 	Exports  []string
 	Author   Author
+	Badges   []string
 }
 
 func (r Readme) IsCommand() bool {
@@ -81,7 +83,8 @@ func mkCodeRegexp(idents []string) *regexp.Regexp {
 var DefaultTemplate = `# {{.Name}}
 
 {{if (not .IsCommand)}}
-[![GoDoc](https://godoc.org/{{.Pkg.ImportPath}}?status.svg)](https://godoc.org/{{.Pkg.ImportPath}})
+[![GoDoc](https://godoc.org/{{.Pkg.ImportPath}}?status.svg)](https://godoc.org/{{.Pkg.ImportPath}}){{end}}
+{{range .Badges}}{{.}}
 {{end}}
 
 {{.Pkg.Doc|markdown}}
@@ -173,6 +176,29 @@ func main() {
 
 	for _, t := range r.Pkg.Funcs {
 		r.Exports = append(r.Exports, t.Name)
+	}
+
+	// Collect badges
+	if _, err := os.Stat(filepath.Join(bpkg.Dir, ".travis.yml")); err == nil {
+		if strings.HasPrefix(bpkg.ImportPath, "github.com/") {
+			// [![Build Status](https://travis-ci.org/motemen/go-sqlf.svg?branch=master)](https://travis-ci.org/motemen/go-sqlf)
+			branch := "master"
+
+			path := bpkg.ImportPath[len("github.com/"):]
+			cmd := exec.Command("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+			cmd.Dir = bpkg.Dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				b := strings.TrimSpace(string(out))
+				if strings.HasPrefix(b, "origin/") {
+					branch = b[len("origin/"):]
+				}
+			}
+
+			r.Badges = append(r.Badges, fmt.Sprintf(
+				"[![Build Status](https://travis-ci.org/%s.svg?branch=%s)](https://travis-ci.org/%s)",
+				path, branch, path,
+			))
+		}
 	}
 
 	r.Author = Author{
