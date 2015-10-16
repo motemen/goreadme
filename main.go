@@ -90,6 +90,12 @@ Output:
 {{  end}}
 {{end}}
 
+{{if .Pkg.Notes.TODO}}
+## TODO
+
+{{range .Pkg.Notes.TODO}}- {{.Body}}{{end}}
+{{end}}
+
 ## Author
 
 {{.Author.Name}} <https://github.com/{{.Author.Name}}>
