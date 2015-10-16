@@ -1,13 +1,14 @@
-// TODO: Custom templates
-
 // goreadme generates an (opinionated) READMEs for your Go packages.
 // it extracts informatino from the source code and tests, then generates
 // a Markdown content suitable as a README boilerplate.
 //
 //   goreadme [.] > README.md
 //
-// For default template, run `go doc github.com/motemen/goreadme.DefaultTemplate`.
+// For the default template, run `go doc github.com/motemen/goreadme.DefaultTemplate`.
 package main
+
+// TODO(motemen): Custom templates
+// TODO(motemen): Section titles
 
 import (
 	"bytes"
@@ -57,7 +58,16 @@ type Author struct {
 
 var predefCodePatterns = []string{
 	"interface",
-	`[a-z]+\.[A-Z]\w*`, // e.g. "http.Client"
+	"struct",
+	`\(\*(?:[a-z.]+/)*[A-Z]\w*\)\.[A-Z]\w*`,  // e.g. "(*Package).Build"
+	`(?:[-a-z0-9.:]+/)*[-a-z0-9]+\.[A-Z]\w*`, // e.g. "http.Client"
+}
+
+func mkCodeRegexp(idents []string) *regexp.Regexp {
+	return regexp.MustCompile(
+		`(^|\s)((?:` + strings.Join(predefCodePatterns, "|") + `)` +
+			`(?:\{.*?\}|\[.*?\]|\(.*?\))?)([.,]|\s|$)`,
+	)
 }
 
 // The default README template.
@@ -101,7 +111,11 @@ Output:
 {{.Author.Name}} <https://github.com/{{.Author.Name}}>
 `
 
-var outputPrefix = regexp.MustCompile(`(?i)^[[:space:]]*output:`)
+var (
+	rxOutputPrefix = regexp.MustCompile(`(?i)^[[:space:]]*output:`)
+	rxIndent       = regexp.MustCompile(`^(\s+)\S`)
+	rxEmptyLines   = regexp.MustCompile(`\n{3,}`)
+)
 
 func main() {
 	tmplFile := flag.String("f", "", "template file")
@@ -160,114 +174,24 @@ func main() {
 		r.Exports = append(r.Exports, t.Name)
 	}
 
+	// TODO(motemen): Make author information correct
 	r.Author = Author{
 		Name: regexp.MustCompile(`^github\.com/([^/]+)`).FindStringSubmatch(r.Pkg.ImportPath)[1],
 	}
 
-	var (
-		rxCode = regexp.MustCompile(
-			`(\b(?:` + strings.Join(append(r.Exports, predefCodePatterns...), "|") + `)\b` +
-				`(?:\{.*?\}|\[.*?\]|\(.*?\))?)`,
-		)
-		rxIndent     = regexp.MustCompile(`^\s+\S`)
-		rxEmptyLines = regexp.MustCompile(`\n{3,}`)
-	)
-
-	printerConfig := printer.Config{
-		Tabwidth: 4,
-		Mode:     printer.UseSpaces,
-	}
-
 	tmpl := template.New("readme").Funcs(template.FuncMap{
 		"code": func(v interface{}) string {
-			var (
-				buf bytes.Buffer
-				err error
-			)
-			if node, ok := v.(ast.Node); ok {
-				if block, ok := node.(*ast.BlockStmt); ok {
-					err = printerConfig.Fprint(&buf, fset, block.List)
-				} else {
-					err = printerConfig.Fprint(&buf, fset, node)
-				}
-			} else if ex, ok := v.(*doc.Example); ok {
-				// Try to remove "Output:" comments
-				comments := make([]*ast.CommentGroup, 0, len(ex.Comments))
-				var outputComment *ast.CommentGroup
-				for _, c := range ex.Comments {
-					if outputPrefix.MatchString(c.Text()) {
-						outputComment = c
-						continue
-					}
-					comments = append(comments, c)
-				}
-
-				if f := ex.Play; f != nil {
-					for _, d := range f.Decls {
-						if fun, ok := d.(*ast.FuncDecl); ok && fun.Name.Name == "main" {
-							if fun.Pos() <= outputComment.Pos() && outputComment.Pos() <= fun.End() {
-								fun.Body.Rbrace = fun.Body.List[len(fun.Body.List)-1].End()
-							}
-						}
-					}
-
-					node := printer.CommentedNode{
-						Node:     f,
-						Comments: comments,
-					}
-					err = printerConfig.Fprint(&buf, fset, &node)
-				} else if block, ok := ex.Code.(*ast.BlockStmt); ok {
-					// XXX dirty hack: we need BlockStmt code without indentation;
-					// so here we make a fake "switch" statement and remove the
-					// outermost braces.
-					node := printer.CommentedNode{
-						Node:     &ast.SwitchStmt{Body: block},
-						Comments: comments,
-					}
-
-					var b bytes.Buffer
-
-					printerConfig.Fprint(&b, fset, &node)
-
-					s := b.String()
-					if strings.HasPrefix(s, "switch {\n") && strings.HasSuffix(s, "\n}") {
-						s = s[len("switch {\n") : len(s)-len("\n}")]
-						buf.WriteString(s)
-					}
-				}
-				if buf.Len() == 0 {
-					node := printer.CommentedNode{
-						Node:     ex.Code,
-						Comments: comments,
-					}
-					err = printerConfig.Fprint(&buf, fset, &node)
-				}
-			} else {
-				err = fmt.Errorf("cannot handle %T", v)
-			}
-
+			s, err := renderCode(fset, v)
 			if err != nil {
 				panic(err)
 			}
-			return buf.String()
+			return s
 		},
-		"markdown": func(doc string) string {
-			lines := strings.Split(doc, "\n")
-			inCodeBlock := false
-			for i, line := range lines {
-				if rxIndent.MatchString(line) {
-					line = "    " + strings.TrimSpace(line)
-					if !inCodeBlock {
-						line = "\n" + line
-					}
-					inCodeBlock = true
-				} else {
-					inCodeBlock = false
-				}
-				line = rxCode.ReplaceAllString(line, "`$1`")
-				lines[i] = line
-			}
-			return strings.Join(lines, "\n")
+		"markdown": func(d string) string {
+
+			doc.ToText(os.Stderr, d, "## ", "> ", 80)
+
+			return renderMarkdown(d, r.Exports)
 		},
 		"fence": func(ft, s string) string {
 			if !strings.HasSuffix(s, "\n") {
@@ -296,7 +220,7 @@ func main() {
 	}
 
 	// drop successive empty lines
-	os.Stdout.WriteString(rxEmptyLines.ReplaceAllString(buf.String(), "\n\n"))
+	os.Stdout.WriteString(squeezeEmptyLines(buf.String()))
 }
 
 func pkgFiles(pkg *ast.Package) []*ast.File {
@@ -305,4 +229,125 @@ func pkgFiles(pkg *ast.Package) []*ast.File {
 		ff = append(ff, f)
 	}
 	return ff
+}
+
+func renderMarkdown(doc string, idents []string) string {
+	rxCode := mkCodeRegexp(idents)
+
+	lines := strings.Split(doc, "\n")
+	block := struct {
+		startLine int
+		minIndent int
+	}{
+		-1, 2 << 16,
+	}
+
+	for i, line := range lines {
+		m := rxIndent.FindStringSubmatch(line)
+		if m != nil {
+			if block.startLine == -1 {
+				block.startLine = i
+			}
+			if len(m[1]) < block.minIndent {
+				block.minIndent = len(m[1])
+			}
+		} else {
+			if block.startLine != -1 {
+				for j := block.startLine; j < i; j++ {
+					lines[j] = "    " + lines[j][block.minIndent:]
+				}
+
+				block.startLine = -1
+				block.minIndent = 2 << 16
+			}
+
+			line = rxCode.ReplaceAllString(line, "$1`$2`$3")
+			lines[i] = line
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func renderCode(fset *token.FileSet, v interface{}) (string, error) {
+	printerConfig := printer.Config{
+		Tabwidth: 4,
+		Mode:     printer.UseSpaces,
+	}
+
+	var buf bytes.Buffer
+
+	if node, ok := v.(ast.Node); ok {
+		var err error
+		if block, ok := node.(*ast.BlockStmt); ok {
+			err = printerConfig.Fprint(&buf, fset, block.List)
+		} else {
+			err = printerConfig.Fprint(&buf, fset, node)
+		}
+		return buf.String(), err
+	}
+
+	if ex, ok := v.(*doc.Example); ok {
+		// Try to remove "Output:" comments
+		comments := make([]*ast.CommentGroup, 0, len(ex.Comments))
+		var outputComment *ast.CommentGroup
+		for _, c := range ex.Comments {
+			if rxOutputPrefix.MatchString(c.Text()) {
+				outputComment = c
+				continue
+			}
+			comments = append(comments, c)
+		}
+
+		if f := ex.Play; f != nil {
+			for _, d := range f.Decls {
+				if fun, ok := d.(*ast.FuncDecl); ok && fun.Name.Name == "main" {
+					if fun.Pos() <= outputComment.Pos() && outputComment.Pos() <= fun.End() {
+						fun.Body.Rbrace = fun.Body.List[len(fun.Body.List)-1].End()
+					}
+				}
+			}
+
+			node := printer.CommentedNode{
+				Node:     f,
+				Comments: comments,
+			}
+			err := printerConfig.Fprint(&buf, fset, &node)
+			return buf.String(), err
+		} else if block, ok := ex.Code.(*ast.BlockStmt); ok {
+			// XXX dirty hack: we need BlockStmt code without indentation;
+			// so here we make a fake "switch" statement and remove the
+			// outermost braces.
+			node := printer.CommentedNode{
+				Node:     &ast.SwitchStmt{Body: block},
+				Comments: comments,
+			}
+
+			var b bytes.Buffer
+
+			err := printerConfig.Fprint(&b, fset, &node)
+			if err != nil {
+				return "", err
+			}
+
+			s := b.String()
+			if strings.HasPrefix(s, "switch {\n") && strings.HasSuffix(s, "\n}") {
+				s = s[len("switch {\n") : len(s)-len("\n}")]
+				return s, nil
+			}
+		}
+
+		node := printer.CommentedNode{
+			Node:     ex.Code,
+			Comments: comments,
+		}
+		err := printerConfig.Fprint(&buf, fset, &node)
+		return buf.String(), err
+	}
+
+	return "", fmt.Errorf("cannot handle %T", v)
+}
+
+func squeezeEmptyLines(s string) string {
+	return rxEmptyLines.ReplaceAllString(s, "\n\n")
 }
