@@ -95,6 +95,8 @@ Output:
 {{.Author.Name}} <https://github.com/{{.Author.Name}}>
 `
 
+var outputPrefix = regexp.MustCompile(`(?i)^[[:space:]]*output:`)
+
 func main() {
 	tmplFile := flag.String("f", "", "template file")
 	flag.Parse()
@@ -134,6 +136,10 @@ func main() {
 		if r.Pkg == nil {
 			r.Pkg = doc.New(pkg, bpkg.ImportPath, doc.Mode(0))
 		}
+	}
+
+	if r.Pkg == nil {
+		log.Fatal("no source found")
 	}
 
 	for _, v := range append(r.Pkg.Consts, r.Pkg.Vars...) {
@@ -179,31 +185,64 @@ func main() {
 					err = printerConfig.Fprint(&buf, fset, node)
 				}
 			} else if ex, ok := v.(*doc.Example); ok {
-				if block, ok := ex.Code.(*ast.BlockStmt); ok {
-					for _, s := range block.List {
-						node := printer.CommentedNode{
-							Node:     s,
-							Comments: ex.Comments,
-						}
-						err = printerConfig.Fprint(&buf, fset, &node)
-						if err != nil {
-							break
+				// Try to remove "Output:" comments
+				comments := make([]*ast.CommentGroup, 0, len(ex.Comments))
+				var outputComment *ast.CommentGroup
+				for _, c := range ex.Comments {
+					if outputPrefix.MatchString(c.Text()) {
+						outputComment = c
+						continue
+					}
+					comments = append(comments, c)
+				}
+
+				if f := ex.Play; f != nil {
+					for _, d := range f.Decls {
+						if fun, ok := d.(*ast.FuncDecl); ok && fun.Name.Name == "main" {
+							if fun.Pos() <= outputComment.Pos() && outputComment.Pos() <= fun.End() {
+								fun.Body.Rbrace = fun.Body.List[len(fun.Body.List)-1].End()
+							}
 						}
 					}
-				} else {
+
+					node := printer.CommentedNode{
+						Node:     f,
+						Comments: comments,
+					}
+					err = printerConfig.Fprint(&buf, fset, &node)
+				} else if block, ok := ex.Code.(*ast.BlockStmt); ok {
+					// XXX dirty hack: we need BlockStmt code without indentation;
+					// so here we make a fake "switch" statement and remove the
+					// outermost braces.
+					node := printer.CommentedNode{
+						Node:     &ast.SwitchStmt{Body: block},
+						Comments: comments,
+					}
+
+					var b bytes.Buffer
+
+					printerConfig.Fprint(&b, fset, &node)
+
+					s := b.String()
+					if strings.HasPrefix(s, "switch {\n") && strings.HasSuffix(s, "\n}") {
+						s = s[len("switch {\n") : len(s)-len("\n}")]
+						buf.WriteString(s)
+					}
+				}
+				if buf.Len() == 0 {
 					node := printer.CommentedNode{
 						Node:     ex.Code,
-						Comments: ex.Comments,
+						Comments: comments,
 					}
 					err = printerConfig.Fprint(&buf, fset, &node)
 				}
 			} else {
-				panic(fmt.Sprintf("cannot handle %T", v))
+				err = fmt.Errorf("cannot handle %T", v)
 			}
+
 			if err != nil {
 				panic(err)
 			}
-
 			return buf.String()
 		},
 		"markdown": func(doc string) string {
