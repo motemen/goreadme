@@ -7,13 +7,13 @@
 // For the default template, run `go doc github.com/motemen/goreadme.DefaultTemplate`.
 package main
 
-// TODO(motemen): Custom templates
-// TODO(motemen): Section titles
+// TODO(motemen): Make author information correct
 
 import (
 	"bytes"
 	"flag"
 	"fmt"
+	"html"
 	"io/ioutil"
 	"log"
 	"os"
@@ -43,7 +43,7 @@ func (r Readme) IsCommand() bool {
 }
 
 func (r Readme) Name() string {
-	if r.Pkg.Name == "main" {
+	if r.IsCommand() {
 		// this package should be a command
 		parts := strings.Split(r.Pkg.ImportPath, "/")
 		return parts[len(parts)-1]
@@ -56,11 +56,16 @@ type Author struct {
 	Name string
 }
 
+var (
+	patIdent   = `[\pL_][\pL_0-9]*`
+	patPkgPath = `(?:[-a-z0-9.:]+/)*[-a-z0-9]+`
+)
+
 var predefCodePatterns = []string{
 	"interface",
 	"struct",
-	`\(\*(?:[a-z.]+/)*[A-Z]\w*\)\.[A-Z]\w*`,  // e.g. "(*Package).Build"
-	`(?:[-a-z0-9.:]+/)*[-a-z0-9]+\.[A-Z]\w*`, // e.g. "http.Client"
+	`(?:` + patPkgPath + `\.)?` + patIdent + `\.` + patIdent,
+	`\(\*` + `(?:` + patPkgPath + `\.)?` + patIdent + `\.\)` + patIdent,
 }
 
 func mkCodeRegexp(idents []string) *regexp.Regexp {
@@ -110,12 +115,6 @@ Output:
 
 {{.Author.Name}} <https://github.com/{{.Author.Name}}>
 `
-
-var (
-	rxOutputPrefix = regexp.MustCompile(`(?i)^[[:space:]]*output:`)
-	rxIndent       = regexp.MustCompile(`^(\s+)\S`)
-	rxEmptyLines   = regexp.MustCompile(`\n{3,}`)
-)
 
 func main() {
 	tmplFile := flag.String("f", "", "template file")
@@ -174,7 +173,6 @@ func main() {
 		r.Exports = append(r.Exports, t.Name)
 	}
 
-	// TODO(motemen): Make author information correct
 	r.Author = Author{
 		Name: regexp.MustCompile(`^github\.com/([^/]+)`).FindStringSubmatch(r.Pkg.ImportPath)[1],
 	}
@@ -188,9 +186,6 @@ func main() {
 			return s
 		},
 		"markdown": func(d string) string {
-
-			doc.ToText(os.Stderr, d, "## ", "> ", 80)
-
 			return renderMarkdown(d, r.Exports)
 		},
 		"fence": func(ft, s string) string {
@@ -231,43 +226,70 @@ func pkgFiles(pkg *ast.Package) []*ast.File {
 	return ff
 }
 
-func renderMarkdown(doc string, idents []string) string {
+var rxParseHTML = regexp.MustCompile(
+	`<a\b[^>]*>(?P<link>[^<]*)</a>` +
+		`|<pre\b[^>]*>(?P<pre>[^<]*)</pre>` +
+		`|<h3\b[^>]*>(?P<heading>[^<]*)</h3>` +
+		`|<p\b[^>]*>\n?(?P<para>[^<]*)</[^>]*>` +
+		`|<[^>]*>(?P<other>[^<]*)</[^>]*>` +
+		`|(?P<plain>[^<]+)`,
+)
+
+func renderMarkdown(docString string, idents []string) string {
+	var out bytes.Buffer
+
 	rxCode := mkCodeRegexp(idents)
 
-	lines := strings.Split(doc, "\n")
-	block := struct {
-		startLine int
-		minIndent int
-	}{
-		-1, 2 << 16,
+	var docHTML string
+	{
+		var bufHTML bytes.Buffer
+		doc.ToHTML(&bufHTML, docString, nil)
+		docHTML = bufHTML.String()
 	}
 
-	for i, line := range lines {
-		m := rxIndent.FindStringSubmatch(line)
-		if m != nil {
-			if block.startLine == -1 {
-				block.startLine = i
-			}
-			if len(m[1]) < block.minIndent {
-				block.minIndent = len(m[1])
-			}
-		} else {
-			if block.startLine != -1 {
-				for j := block.startLine; j < i; j++ {
-					lines[j] = "    " + lines[j][block.minIndent:]
-				}
-
-				block.startLine = -1
-				block.minIndent = 2 << 16
-			}
-
-			line = rxCode.ReplaceAllString(line, "$1`$2`$3")
-			lines[i] = line
+	for {
+		m := rxParseHTML.FindStringSubmatchIndex(docHTML)
+		if m == nil {
+			break
 		}
+
+		for i, name := range rxParseHTML.SubexpNames() {
+			if i == 0 {
+				continue
+			}
+			if m[i*2] == -1 {
+				continue
+			}
+
+			s := html.UnescapeString(docHTML[m[i*2]:m[i*2+1]])
+
+			if name == "pre" {
+				lines := strings.SplitAfter(s, "\n")
+				for i, line := range lines {
+					if i == len(lines)-1 && line == "" {
+						// nop
+					} else {
+						out.WriteString("    ")
+					}
+					out.WriteString(line)
+				}
+			} else if name == "heading" {
+				out.WriteString("## ")
+				out.WriteString(s)
+				out.WriteString("\n")
+			} else {
+				s = rxCode.ReplaceAllString(s, "$1`$2`$3")
+				out.WriteString(s)
+			}
+		}
+
+		docHTML = docHTML[m[1]:]
 	}
 
-	return strings.Join(lines, "\n")
+	return out.String()
 }
+
+var rxOutputPrefix = regexp.MustCompile(`(?i)^[[:space:]]*output:`)
 
 func renderCode(fset *token.FileSet, v interface{}) (string, error) {
 	printerConfig := printer.Config{
@@ -347,6 +369,8 @@ func renderCode(fset *token.FileSet, v interface{}) (string, error) {
 
 	return "", fmt.Errorf("cannot handle %T", v)
 }
+
+var rxEmptyLines = regexp.MustCompile(`\n{3,}`)
 
 func squeezeEmptyLines(s string) string {
 	return rxEmptyLines.ReplaceAllString(s, "\n\n")
