@@ -7,7 +7,6 @@
 // For the default template, run `go doc github.com/motemen/goreadme.DefaultTemplate`.
 package main
 
-// TODO(motemen): Make author information correct
 // TODO(motemen): Show only toplevel todos?
 
 import (
@@ -30,6 +29,8 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+
+	"github.com/motemen/go-gitconfig"
 )
 
 type Readme struct {
@@ -56,7 +57,10 @@ func (r Readme) Name() string {
 }
 
 type Author struct {
-	Name string
+	Name  string `gitconfig:"user.name"`
+	Email string `gitconfig:"user.email"`
+	// Non-standard configuration.
+	Homepage string `gitconfig:"user.homepage"`
 }
 
 var (
@@ -118,7 +122,7 @@ Output:
 
 ## Author
 
-{{.Author.Name}} <https://github.com/{{.Author.Name}}>
+{{.Author.Name}} <{{if .Author.Homepage}}{{.Author.Homepage}}{{else}}{{.Author.Email}}{{end}}>
 `
 
 func main() {
@@ -201,9 +205,10 @@ func main() {
 		}
 	}
 
-	r.Author = Author{
-		Name: regexp.MustCompile(`^github\.com/([^/]+)`).FindStringSubmatch(r.Pkg.ImportPath)[1],
-	}
+	_ = gitconfig.Config{
+		Source: gitconfig.SourceDefault,
+		Dir:    bpkg.Dir,
+	}.Load(&r.Author)
 
 	tmpl := template.New("readme").Funcs(template.FuncMap{
 		"code": func(v interface{}) string {
@@ -256,9 +261,14 @@ func pkgFiles(pkg *ast.Package) []*ast.File {
 
 var (
 	rxParseHTML = regexp.MustCompile(
-		`<pre\b[^>]*>(?P<pre>[^<]*)</pre>` +
-			`|<h3\b[^>]*>(?P<heading>[^<]*)</h3>` +
-			`|<p\b[^>]*>\n?(?P<para>(?s:.)*?)</p>`,
+		strings.Join(
+			[]string{
+				`<pre\b[^>]*>(?P<pre>(?s:.)*?)</pre>`,
+				`<h3\b[^>]*>(?P<heading>(?s:.)*?)</h3>`,
+				`<p\b[^>]*>\n?(?P<para>(?s:.)*?)</p>`,
+			},
+			"|",
+		),
 	)
 	rxStripTag = regexp.MustCompile(`<[^>]*>`)
 )
@@ -289,7 +299,7 @@ func renderMarkdown(docString string, idents []string) string {
 				continue
 			}
 
-			s := html.UnescapeString(docHTML[m[i*2]:m[i*2+1]])
+			s := html.UnescapeString(rxStripTag.ReplaceAllString(docHTML[m[i*2]:m[i*2+1]], ""))
 
 			if name == "pre" {
 				lines := strings.SplitAfter(s, "\n")
@@ -307,7 +317,6 @@ func renderMarkdown(docString string, idents []string) string {
 				out.WriteString(s)
 				out.WriteString("\n\n")
 			} else {
-				s = rxStripTag.ReplaceAllString(s, "")
 				s = rxCode.ReplaceAllString(s, "$1`$2`$3")
 				s = regexp.MustCompile(`[_]`).ReplaceAllString(s, `\_`)
 				out.WriteString(s)
