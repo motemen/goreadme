@@ -155,7 +155,27 @@ func main() {
 	r := Readme{}
 
 	for name, pkg := range pkgs {
-		r.Examples = append(r.Examples, doc.Examples(pkgFiles(pkg)...)...)
+		exs := doc.Examples(pkgFiles(pkg)...)
+		for _, ex := range exs {
+			// Use the doc (if any)
+			if ex.Name == "" && ex.Doc != "" {
+				ex.Name = strings.TrimSpace(strings.TrimPrefix(ex.Doc, "Example:"))
+				if ex.Play != nil {
+					// If the example was whole file, remove the doc comment from the example function
+					for _, d := range ex.Play.Decls {
+						if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == "main" {
+							for i, c := range ex.Comments {
+								if c.Text() == ex.Doc {
+									ex.Comments = append(ex.Comments[0:i], ex.Comments[i+1:len(ex.Comments)]...)
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+			r.Examples = append(r.Examples, ex)
+		}
 
 		if strings.HasSuffix(name, "_test") {
 			continue
